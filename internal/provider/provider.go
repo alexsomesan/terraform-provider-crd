@@ -5,42 +5,112 @@ package provider
 
 import (
 	"context"
-	"net/http"
+	"fmt"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-codegen-framework/pkg/resource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/pb33f/libopenapi"
+
+	ogen "github.com/hashicorp/terraform-plugin-codegen-openapi/pkg/mapper/oas"
 )
 
-// Ensure ScaffoldingProvider satisfies various provider interfaces.
-var _ provider.Provider = &ScaffoldingProvider{}
-var _ provider.ProviderWithFunctions = &ScaffoldingProvider{}
+// Ensure KubernetesCRD satisfies various provider interfaces.
+var _ provider.Provider = &KubernetesCRD{}
+var _ provider.ProviderWithFunctions = &KubernetesCRD{}
 
-// ScaffoldingProvider defines the provider implementation.
-type ScaffoldingProvider struct {
+// KubernetesCRD defines the provider implementation.
+type KubernetesCRD struct {
 	// version is set to the provider version on release, "dev" when the
 	// provider is built and ran locally, and "test" when running acceptance
 	// testing.
 	version string
+	clients *KubernetesClients
 }
 
-// ScaffoldingProviderModel describes the provider data model.
-type ScaffoldingProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
+// KubernetesCRDModel describes the provider data model.
+type KubernetesCRDModel struct {
+	Kubeconfig types.String `tfsdk:"kubeconfig"`
 }
 
-func (p *ScaffoldingProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
-	resp.TypeName = "scaffolding"
+func (p *KubernetesCRD) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
+	resp.TypeName = "crd"
 	resp.Version = p.version
 }
 
-func (p *ScaffoldingProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
+func (p *KubernetesCRD) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
+	// spec := map[string]*spec.Schema{}
+
+	paths, err := p.clients.discovery.OpenAPIV3().Paths()
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to get OpenAPI paths", err.Error())
+		return
+	}
+
+	for key, gv := range paths {
+		ks := strings.Split(key, "/")
+		if ks[0] != "apis" {
+			continue
+		}
+		s, err := gv.Schema("application/json")
+		if err != nil {
+			resp.Diagnostics.AddError(fmt.Sprintf("Failed to decode schema for resource %q", strings.Join(ks[1:], "/")), err.Error())
+			continue
+		}
+
+		// create a new document from specification bytes
+		document, err := libopenapi.NewDocument(s)
+		// if anything went wrong, an error is thrown
+		if err != nil {
+			panic(fmt.Sprintf("cannot create new document: %e", err))
+		}
+
+		// because we know this is a v3 spec, we can build a ready to go model from it.
+		v3Model, errors := document.BuildV3Model()
+		if len(errors) > 0 {
+			for i := range errors {
+				fmt.Printf("error: %e\n", errors[i])
+			}
+			panic(fmt.Sprintf("cannot create v3 model from document: %d errors reported", len(errors)))
+		}
+
+		// get a count of the number of paths and schemas.
+		schemas := v3Model.Model.Components.Schemas
+
+		for schema := schemas.First(); schema != nil; schema = schema.Next() {
+			// get the name of the schema
+			schemaName := schema.Key()
+
+			if rejectPath(schemaName) {
+				// fmt.Printf("Skipping schema %q\n", schemaName)
+				continue
+			}
+
+			// get the schema object from the map
+			schemaValue := schema.Value()
+
+			// build the schema
+			schema := schemaValue.Schema()
+
+			// if the schema has properties, print the number of properties
+			if schema != nil && schema.Properties != nil {
+				oaschema, err := ogen.BuildSchema(schemaValue, ogen.SchemaOpts{}, ogen.GlobalSchemaOpts{})
+				if err != nil {
+					panic(fmt.Sprintf("Failed to convert OAPI schema of %q: %s", schemaName, err))
+				}
+				fmt.Printf("Schema %q is type %s\n", schemaName, oaschema.Type)
+			}
+		}
+	}
+
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
-			"endpoint": schema.StringAttribute{
+			"kubeconfig": schema.StringAttribute{
 				MarkdownDescription: "Example provider attribute",
 				Optional:            true,
 			},
@@ -48,8 +118,8 @@ func (p *ScaffoldingProvider) Schema(ctx context.Context, req provider.SchemaReq
 	}
 }
 
-func (p *ScaffoldingProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
-	var data ScaffoldingProviderModel
+func (p *KubernetesCRD) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	var data KubernetesCRDModel
 
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 
@@ -58,27 +128,26 @@ func (p *ScaffoldingProvider) Configure(ctx context.Context, req provider.Config
 	}
 
 	// Configuration values are now available.
-	// if data.Endpoint.IsNull() { /* ... */ }
+	// if data.Kubeconfig.IsNull() { /* ... */ }
 
 	// Example client configuration for data sources and resources
-	client := http.DefaultClient
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	resp.DataSourceData = p.clients
+	resp.ResourceData = p.clients
 }
 
-func (p *ScaffoldingProvider) Resources(ctx context.Context) []func() resource.Resource {
+func (p *KubernetesCRD) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewExampleResource,
 	}
 }
 
-func (p *ScaffoldingProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
+func (p *KubernetesCRD) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
-		NewExampleDataSource,
+		// NewExampleDataSource,
 	}
 }
 
-func (p *ScaffoldingProvider) Functions(ctx context.Context) []func() function.Function {
+func (p *KubernetesCRD) Functions(ctx context.Context) []func() function.Function {
 	return []func() function.Function{
 		NewExampleFunction,
 	}
@@ -86,8 +155,9 @@ func (p *ScaffoldingProvider) Functions(ctx context.Context) []func() function.F
 
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
-		return &ScaffoldingProvider{
+		return &KubernetesCRD{
 			version: version,
+			clients: NewKubernetesClient(),
 		}
 	}
 }
