@@ -8,7 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/terraform-plugin-codegen-framework/pkg/resource"
+	"github.com/hashicorp/terraform-plugin-codegen-openapi/pkg/config"
+	"github.com/hashicorp/terraform-plugin-codegen-openapi/pkg/mapper"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -17,7 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/pb33f/libopenapi"
 
-	ogen "github.com/hashicorp/terraform-plugin-codegen-openapi/pkg/mapper/oas"
+	"github.com/hashicorp/terraform-plugin-codegen-openapi/pkg/explorer"
 )
 
 // Ensure KubernetesCRD satisfies various provider interfaces.
@@ -52,8 +53,8 @@ func (p *KubernetesCRD) Schema(ctx context.Context, req provider.SchemaRequest, 
 		return
 	}
 
-	for key, gv := range paths {
-		ks := strings.Split(key, "/")
+	for path, gv := range paths {
+		ks := strings.Split(path, "/")
 		if ks[0] != "apis" {
 			continue
 		}
@@ -79,8 +80,14 @@ func (p *KubernetesCRD) Schema(ctx context.Context, req provider.SchemaRequest, 
 			panic(fmt.Sprintf("cannot create v3 model from document: %d errors reported", len(errors)))
 		}
 
+		cfg := config.Config{
+			Resources: map[string]config.Resource{},
+		}
+
 		// get a count of the number of paths and schemas.
-		schemas := v3Model.Model.Components.Schemas
+		m := v3Model.Model
+		m.Index.BuildIndex()
+		schemas := m.Components.Schemas
 
 		for schema := schemas.First(); schema != nil; schema = schema.Next() {
 			// get the name of the schema
@@ -99,13 +106,36 @@ func (p *KubernetesCRD) Schema(ctx context.Context, req provider.SchemaRequest, 
 
 			// if the schema has properties, print the number of properties
 			if schema != nil && schema.Properties != nil {
-				oaschema, err := ogen.BuildSchema(schemaValue, ogen.SchemaOpts{}, ogen.GlobalSchemaOpts{})
-				if err != nil {
-					panic(fmt.Sprintf("Failed to convert OAPI schema of %q: %s", schemaName, err))
+				// oaschema, err := ogen.BuildSchema(schemaValue, ogen.SchemaOpts{}, ogen.GlobalSchemaOpts{})
+				// if err != nil {
+				// 	panic(fmt.Sprintf("Failed to convert OAPI schema of %q: %s", schemaName, err))
+				// }
+				// fmt.Printf("Schema %q is type %s\n", schemaName, oaschema.Type)
+
+				cfg.Resources[schemaName] = config.Resource{
+					Read: &config.OpenApiSpecLocation{
+						Path: "",
+					},
 				}
-				fmt.Printf("Schema %q is type %s\n", schemaName, oaschema.Type)
 			}
 		}
+
+		ex := explorer.NewConfigExplorer(v3Model.Model, cfg)
+		explorerResources, err := ex.FindResources()
+		if err != nil {
+			panic(fmt.Sprintf("Failed to find resources in OAPI doc %q: %s", v3Model.Model.Info, err))
+		}
+
+		resourceMapper := mapper.NewResourceMapper(explorerResources, cfg)
+		resourcesIR, err := resourceMapper.MapToIR(nil)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to map resources to IR: %s", err))
+		}
+
+		for _, rir := range resourcesIR {
+			fmt.Printf("Schema %q is type %s\n", rir.Name, *rir.Schema.Description)
+		}
+
 	}
 
 	resp.Schema = schema.Schema{

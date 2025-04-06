@@ -5,7 +5,8 @@ go 1.23.0
 toolchain go1.23.4
 
 require (
-	github.com/hashicorp/terraform-plugin-codegen-openapi v0.3.1-0.20250310102122-2694361edb1e
+	github.com/hashicorp/terraform-plugin-codegen-framework v0.4.1
+	github.com/hashicorp/terraform-plugin-codegen-openapi v0.3.0
 	github.com/hashicorp/terraform-plugin-framework v1.13.0
 	github.com/hashicorp/terraform-plugin-go v0.25.0
 	github.com/hashicorp/terraform-plugin-log v0.9.0
@@ -76,6 +77,9 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.9-0.20240815153524-6ea36470d1bd // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
+	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
+	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
 	github.com/zclconf/go-cty v1.15.0 // indirect
 	golang.org/x/crypto v0.32.0 // indirect
 	golang.org/x/mod v0.21.0 // indirect
@@ -103,6 +107,6 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
-replace github.com/hashicorp/terraform-plugin-codegen-openapi v0.3.1-0.20250310102122-2694361edb1e => github.com/alexsomesan/terraform-plugin-codegen-openapi v0.0.0-20250313104929-2b84a1421b30
+replace github.com/hashicorp/terraform-plugin-codegen-framework v0.4.1 => github.com/alexsomesan/terraform-plugin-codegen-framework v0.0.0-20250320122204-c13ff9fba402
 
-replace github.com/hashicorp/terraform-plugin-codegen-framework v0.4.2-0.20250310102230-696901abcd85 => github.com/alexsomesan/terraform-plugin-codegen-framework v0.0.0-20250313205856-71a928f8b225
+replace github.com/hashicorp/terraform-plugin-codegen-openapi v0.3.0 => github.com/alexsomesan/terraform-plugin-codegen-openapi v0.0.0-20250313104929-2b84a1421b30
