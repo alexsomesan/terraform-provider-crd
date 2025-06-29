@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/stoewer/go-strcase"
 	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/kube-openapi/pkg/validation/spec"
@@ -16,6 +17,8 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &CustomResource{}
+
+var skipAttributes = map[string]interface{}{"kind": nil, "apiVersion": nil, "status": nil}
 
 // var _ resource.ResourceWithImportState = &CustomResource{}
 
@@ -37,8 +40,24 @@ func (r *CustomResource) Metadata(ctx context.Context, req resource.MetadataRequ
 }
 
 func (r *CustomResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	attr := make(map[string]schema.Attribute)
+	rqat := make(map[string]bool)
+	for _, r := range r.schema.Required {
+		rqat[r] = true
+	}
+	for k, v := range r.schema.Properties {
+		if _, ok := skipAttributes[k]; ok {
+			continue
+		}
+		_, rq := rqat[k]
+		av := attributeFromOAPI(&v, rq)
+		if av == nil {
+			continue
+		}
+		attr[strcase.SnakeCase(k)] = av
+	}
 	resp.Schema.Version = 1
-	resp.Schema.Attributes = attributesFromOAPIObject(r.schema)
+	resp.Schema.Attributes = attr
 }
 
 func (r *CustomResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -58,29 +77,15 @@ func resourceName(version string, group string, kind string) string {
 	return fmt.Sprintf("%s_%s_%s", g, version, kind)
 }
 
-func attributesFromOAPIObject(s *spec.Schema) map[string]schema.Attribute {
-	if !s.Type.Contains("object") {
-		log.Fatalf("wrong schema type at top level: %s", strings.Join(s.Type, ","))
-	}
-	attr := make(map[string]schema.Attribute)
-	req := make(map[string]bool)
-	for _, r := range s.Required {
-		req[r] = true
-	}
-	for k, v := range s.Properties {
-		_, rq := req[k]
-		av := attributeFromOAPI(&v, rq)
-		if av == nil {
-			continue
-		}
-		attr[strcase.SnakeCase(k)] = av
-	}
-	return attr
-}
-
 func attributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
 	if s == nil {
 		log.Fatal("nil input schema")
+	}
+	if v, ok := s.Extensions["x-kubernetes-preserve-unknown-fields"]; ok {
+		bv, ok := v.(bool)
+		if ok && bv {
+			return dynamicAttributeFromOAPI(s, r)
+		}
 	}
 	switch {
 	case s.Type.Contains("string"):
@@ -102,16 +107,65 @@ func attributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
 	case s.Type.Contains("boolean"):
 		return boolAttributeFromOAPI(s, r)
 	case len(s.Type) == 0:
-		if v, ok := s.Extensions["x-kubernetes-preserve-unknown-fields"]; ok {
-			bv, err := strconv.ParseBool(v.(string))
-			if err != nil {
-				log.Fatalf("failed to parse boolean value: %s", err)
-			}
-			if bv {
-				return dynamicAttributeFromOAPI(s, r)
+		log.Printf("unknown attribute type: %#v", *s)
+	case s.Type.Contains("object"):
+		switch {
+		case len(s.Properties) > 0:
+			return singleNestedAttributeFromOAPI(s, r)
+		case s.AdditionalProperties.Allows && len(s.Properties) == 0:
+			if isOAPIPrimitive(s.AdditionalProperties.Schema.Type) {
+				return mapAttributeFromOAPI(s, r)
+			} else {
+				return mapNestedAttributeFromOAPI(s, r)
 			}
 		}
-		log.Println(s.Ref)
+	case s.Type.Contains("array"):
+		if isOAPIPrimitive(s.Items.Schema.Type) {
+			return listAttributeFromOAPI(s, r)
+		} else {
+			return listNestedAttributeFromOAPI(s, r)
+		}
+	default:
+		log.Printf("unsupported attribute type: %#v", s.Type)
+	}
+	return nil
+}
+
+func isOAPIPrimitive(t spec.StringOrArray) bool {
+	switch {
+	case t.Contains("string"):
+		return true
+	case t.Contains("number"):
+		return true
+	case t.Contains("integer"):
+		return true
+	case t.Contains("boolean"):
+		return true
+	default:
+		return false
+	}
+}
+
+func fwtypeFromOAPIPrimitive(t string, f string) attr.Type {
+	switch t {
+	case "string":
+		return basetypes.StringType{}
+	case "boolean":
+		return basetypes.BoolType{}
+	case "integer":
+		switch f {
+		case "int32":
+			return basetypes.Int32Type{}
+		case "int64":
+			return basetypes.Int64Type{}
+		}
+	case "number":
+		switch f {
+		case "float":
+			return basetypes.Float32Type{}
+		case "double":
+			return basetypes.Float64Type{}
+		}
 	}
 	return nil
 }
@@ -170,4 +224,72 @@ func dynamicAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
 		Required:    r,
 		Optional:    !r,
 	}
+}
+
+func singleNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+	att := schema.SingleNestedAttribute{
+		Required:   r,
+		Optional:   !r,
+		Attributes: make(map[string]schema.Attribute),
+	}
+	rqat := make(map[string]bool)
+	for _, r := range s.Required {
+		rqat[r] = true
+	}
+	for k, p := range s.Properties {
+		_, rq := rqat[k]
+		av := attributeFromOAPI(&p, rq)
+		if av == nil {
+			continue
+		}
+		att.Attributes[strcase.SnakeCase(k)] = av
+	}
+	return att
+}
+
+func mapAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+	et := fwtypeFromOAPIPrimitive(s.AdditionalProperties.Schema.Type[0], s.AdditionalProperties.Schema.Format)
+	if et == nil {
+		log.Fatalln("failed to determine primitive type from OpenAPI")
+	}
+	return schema.MapAttribute{
+		Required:    r,
+		Optional:    !r,
+		Description: s.Description,
+		ElementType: et,
+	}
+}
+
+func listAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+	et := fwtypeFromOAPIPrimitive(s.Items.Schema.Type[0], s.Items.Schema.Format)
+	if et == nil {
+		log.Fatalln("failed to determine primitive type from OpenAPI")
+	}
+	return schema.ListAttribute{
+		Required:    r,
+		Optional:    !r,
+		Description: s.Description,
+		ElementType: et,
+	}
+}
+
+func mapNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+	// TODO
+	attr := schema.MapNestedAttribute{
+		Required:    r,
+		Optional:    !r,
+		Description: s.Description,
+	}
+	return attr
+}
+
+func listNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+	el := singleNestedAttributeFromOAPI(s.Items.Schema, true)
+	attr := schema.ListNestedAttribute{
+		Required:     r,
+		Optional:     !r,
+		Description:  s.Description,
+		NestedObject: el.(schema.SingleNestedAttribute).GetNestedObject().(schema.NestedAttributeObject),
+	}
+	return attr
 }

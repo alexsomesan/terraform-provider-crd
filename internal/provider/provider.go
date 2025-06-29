@@ -80,9 +80,10 @@ func (p *KubernetesCRD) Resources(ctx context.Context) []func() resource.Resourc
 
 	for _, crd := range crds.Items {
 		for _, ver := range crd.Spec.Versions {
-			gvspec, err := p.clients.Openapi.GVSpec(rtschema.GroupVersion{Version: ver.Name, Group: crd.Spec.Group})
+			gv := rtschema.GroupVersion{Version: ver.Name, Group: crd.Spec.Group}
+			gvspec, err := p.clients.Openapi.GVSpec(gv)
 			if err != nil {
-				log.Fatalln(err)
+				log.Fatal(err)
 			}
 			var s *spec.Schema
 			for k := range gvspec.Components.Schemas {
