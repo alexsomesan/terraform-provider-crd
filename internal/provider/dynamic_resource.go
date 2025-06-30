@@ -73,7 +73,7 @@ func (r *CustomResource) Delete(ctx context.Context, req resource.DeleteRequest,
 }
 
 func resourceName(version string, group string, kind string) string {
-	g := strings.Replace(group, ".", "_", -1)
+	g := strings.ReplaceAll(group, ".", "_")
 	return fmt.Sprintf("%s_%s_%s", g, version, kind)
 }
 
@@ -226,7 +226,7 @@ func dynamicAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
 	}
 }
 
-func singleNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+func singleNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.SingleNestedAttribute {
 	att := schema.SingleNestedAttribute{
 		Required:   r,
 		Optional:   !r,
@@ -274,22 +274,27 @@ func listAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
 }
 
 func mapNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
-	// TODO
-	attr := schema.MapNestedAttribute{
-		Required:    r,
-		Optional:    !r,
-		Description: s.Description,
+	no, ok := singleNestedAttributeFromOAPI(s.AdditionalProperties.Schema, true).GetNestedObject().(schema.NestedAttributeObject)
+	if !ok {
+		log.Fatalf("missmatched types - should not happen")
 	}
-	return attr
-}
-
-func listNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
-	el := singleNestedAttributeFromOAPI(s.Items.Schema, true)
-	attr := schema.ListNestedAttribute{
+	return schema.MapNestedAttribute{
 		Required:     r,
 		Optional:     !r,
 		Description:  s.Description,
-		NestedObject: el.(schema.SingleNestedAttribute).GetNestedObject().(schema.NestedAttributeObject),
+		NestedObject: no,
 	}
-	return attr
+}
+
+func listNestedAttributeFromOAPI(s *spec.Schema, r bool) schema.Attribute {
+	no, ok := singleNestedAttributeFromOAPI(s.Items.Schema, true).GetNestedObject().(schema.NestedAttributeObject)
+	if !ok {
+		log.Fatalf("missmatched types - should not happen")
+	}
+	return schema.ListNestedAttribute{
+		Required:     r,
+		Optional:     !r,
+		Description:  s.Description,
+		NestedObject: no,
+	}
 }
