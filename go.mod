@@ -100,4 +100,5 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
-replace github.com/hashicorp/terraform-plugin-go => /Users/alex/work/terraform-plugin-go
+// Used locally to enable easier debugging.
+// replace github.com/hashicorp/terraform-plugin-go => /Users/alex/work/terraform-plugin-go
